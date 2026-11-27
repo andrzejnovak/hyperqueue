@@ -1194,3 +1194,55 @@ fn test_steal_target_worker_lost() {
     assert!(rt.core().split().scheduler_state.redirects.is_empty());
     rt.sanity_check();
 }
+
+/// A task that waits for a dependency is not in the queue of ready tasks.  Removing it (its dependency failed or
+/// was cancelled) must leave the queue alone: with exactly one other task of the same priority and resource
+/// request queued, the queue used to assert that the queued task was the one being removed.
+fn setup_waiting_consumer_and_one_ready_task(rt: &mut TestEnv) -> (WorkerId, TaskId, TaskId, TaskId) {
+    let w1 = rt.new_worker_cpus(1);
+    let t1 = rt.new_task_running(&TaskBuilder::new().cpus(1), w1);
+    let t2 = rt.new_task(&TaskBuilder::new().cpus(3).task_deps(&[t1]));
+    let t3 = rt.new_task(&TaskBuilder::new().cpus(3));
+    assert!(matches!(
+        rt.task(t2).state,
+        TaskRuntimeState::Waiting { unfinished_deps: 1 }
+    ));
+    assert!(matches!(
+        rt.task(t3).state,
+        TaskRuntimeState::Waiting { unfinished_deps: 0 }
+    ));
+    assert_eq!(rt.task(t2).priority(), rt.task(t3).priority());
+    (w1, t1, t2, t3)
+}
+
+#[test]
+fn test_fail_task_with_waiting_consumer_and_one_ready_task() {
+    let mut rt = TestEnv::new();
+    let (w1, t1, t2, t3) = setup_waiting_consumer_and_one_ready_task(&mut rt);
+    let mut comm = TestComm::new();
+    on_task_update(
+        rt.core(),
+        &mut comm,
+        w1,
+        smallvec![WorkerTaskUpdate::Failed {
+            task_id: t1,
+            info: TaskFailInfo::from_string("".to_string()),
+        }],
+    );
+    assert!(!rt.task_exists(t1));
+    assert!(!rt.task_exists(t2));
+    assert!(rt.task_exists(t3));
+    rt.sanity_check();
+}
+
+#[test]
+fn test_cancel_task_with_waiting_consumer_and_one_ready_task() {
+    let mut rt = TestEnv::new();
+    let (_w1, t1, t2, t3) = setup_waiting_consumer_and_one_ready_task(&mut rt);
+    let mut comm = TestComm::new();
+    on_cancel_tasks(rt.core(), &mut comm, &[t1, t2]);
+    assert!(!rt.task_exists(t1));
+    assert!(!rt.task_exists(t2));
+    assert!(rt.task_exists(t3));
+    rt.sanity_check();
+}

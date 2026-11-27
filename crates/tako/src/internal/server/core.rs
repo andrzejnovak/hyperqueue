@@ -225,15 +225,17 @@ impl Core {
             .remove(task_id)
             .expect("Trying to remove non-existent task");
         if let TaskRuntimeState::Waiting { unfinished_deps } = &task.state {
-            self.task_queues
-                .get_mut(task.resource_rq_id)
-                .remove(task_id, task.priority());
             if *unfinished_deps > 0 {
+                // A task that waits for its dependencies is not in the queue of ready tasks
                 for input_id in task.task_deps {
                     if let Some(input) = self.find_task_mut(input_id) {
                         assert!(input.remove_consumer(task_id));
                     }
                 }
+            } else {
+                self.task_queues
+                    .get_mut(task.resource_rq_id)
+                    .remove(task_id, task.priority());
             }
         }
         task.state
